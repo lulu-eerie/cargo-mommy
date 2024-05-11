@@ -16,6 +16,7 @@ thirsty = []
 yikes = []
 
 [dependencies]
+anyhow = "1.0.83"
 fastrand = "1.8.0"
 home = "0.5.9"
 

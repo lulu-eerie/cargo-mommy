@@ -51,6 +51,8 @@ struct Mood {
     negative: Vec<String>,
     overflow: Vec<String>,
     beg_first: Vec<String>,
+    did_not_beg: Vec<String>,
+    must_beg_more: Vec<String>,
     #[serde(default)]
     spiciness: Spiciness,
 }
@@ -154,6 +156,14 @@ fn main() {
         for response in &mood.beg_first {
             parse_response(response, &mut responses)
         }
+        let _ = write!(responses, "], did_not_beg: &[");
+        for response in &mood.did_not_beg {
+            parse_response(response, &mut responses)
+        }
+        let _ = write!(responses, "], must_beg_more: &[");
+        for response in &mood.must_beg_more {
+            parse_response(response, &mut responses)
+        }
         let _ = write!(responses, "] }},");
     }
 
@@ -162,22 +172,24 @@ fn main() {
     let emote_idx = config.vars["emote"].index;
     let pronoun_idx = config.vars["pronoun"].index;
     let role_idx = config.vars["role"].index;
-    let beg_chance_idx = config.vars["beg_chance"].index;
+    let beg_half_life_idx = config.vars["beg_half_life"].index;
+    let beg_stubborn_chance_idx = config.vars["beg_stubborn_chance"].index;
 
     fs::write(
         dest_path,
         format!(
-            r"
-            static CONFIG: Config<'static> = Config {{
-                vars: &[{vars}],
-                moods: &[{responses}],
-            }};
-            static MOOD: &Var<'static> = &CONFIG.vars[{mood_idx}];
-            static EMOTE: &Var<'static> = &CONFIG.vars[{emote_idx}];
-            static PRONOUN: &Var<'static> = &CONFIG.vars[{pronoun_idx}];
-            static ROLE: &Var<'static> = &CONFIG.vars[{role_idx}];
-            static BEG_CHANCE: &Var<'static> = &CONFIG.vars[{beg_chance_idx}];
-            "
+r"
+static CONFIG: Config<'static> = Config {{
+    vars: &[{vars}],
+    moods: &[{responses}],
+}};
+static MOOD: &Var<'static> = &CONFIG.vars[{mood_idx}];
+static EMOTE: &Var<'static> = &CONFIG.vars[{emote_idx}];
+static PRONOUN: &Var<'static> = &CONFIG.vars[{pronoun_idx}];
+static ROLE: &Var<'static> = &CONFIG.vars[{role_idx}];
+static BEG_HALF_LIFE: &Var<'static> = &CONFIG.vars[{beg_half_life_idx}];
+static BEG_STUBBORN_CHANCE: &Var<'static> = &CONFIG.vars[{beg_stubborn_chance_idx}];
+"
         ),
     )
     .unwrap();

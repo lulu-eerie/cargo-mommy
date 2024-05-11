@@ -1,9 +1,11 @@
 #![allow(clippy::let_and_return)]
 
-use fastrand::Rng;
 use std::env;
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
+
+use fastrand::Rng;
 
 enum ResponseType {
     Positive,
@@ -11,6 +13,7 @@ enum ResponseType {
     Overflow,
     FirstBeg,
     DidNotBeg,
+    MustBegMore,
 }
 
 /// Mommy intentionally lets her little ones call her recursively, since they might want to hear more from her~
@@ -23,6 +26,9 @@ const RECURSION_LIMIT_VAR: &str = "CARGO_MOMMY_RECURSION_LIMIT";
 
 /// The lock file name
 const LOCK_FILE_NAME: &str = "MOMMY.lock";
+
+/// The beg file name
+const BEG_FILE_NAME: &str = "MOMMY-PLEASE.time";
 
 fn main() {
     // Ideally mommy would use ExitCode but that's pretty new and mommy wants
@@ -105,17 +111,27 @@ fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
         let _ = arg_iter.next();
     }
 
-    // mommy will attempt to parse your input as a integer~
+    // mommy will attempt to parse your input as an integer~
     // but if you provide nonsense you'll get punished~
 
-    let beg_chance: u8 = BEG_CHANCE
+    let beg_half_life: u16 = BEG_HALF_LIFE
+        .load(&true_role, &rng)?
+        .trim()
+        .parse()
+        .unwrap_or_else(|err: std::num::ParseIntError| match err.kind() {
+            std::num::IntErrorKind::PosOverflow => u16::MAX,
+            std::num::IntErrorKind::NegOverflow => 0,
+            _ => 120,
+        });
+
+    let beg_stubborn_chance: u8 = BEG_STUBBORN_CHANCE
         .load(&true_role, &rng)?
         .trim()
         .parse()
         .unwrap_or_else(|err: std::num::ParseIntError| match err.kind() {
             std::num::IntErrorKind::PosOverflow => 100,
             std::num::IntErrorKind::NegOverflow => 0,
-            _ => 20,
+            _ => 33,
         });
 
     // Sometimes mommy will decide to make you beg. So we have to check to make sure that if we
@@ -124,15 +140,15 @@ fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
     // Mommy also makes sure not to break anyone who wants to use a real tool called "cargo
     // please" if set to zero.
 
-    let begging = if beg_chance != 0 {
+    let begging = if beg_half_life == 0 {
+        true
+    } else {
         arg_iter
             .peek()
             .map_or(false, |arg| arg == "please")
             .then(|| arg_iter.next())
             .flatten()
             .is_some()
-    } else {
-        true
     };
 
     // *WHEEZES*
@@ -194,7 +210,7 @@ fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
     }
 
     // mommy probably shouldn't be too smart with file system errors
-    let mut maybe_beg = match check_need_beg(&rng, beg_chance) {
+    let mut maybe_beg = match check_need_beg(&rng, begging, beg_half_life, beg_stubborn_chance) {
         Err(err) => {
             eprintln!(
                 "\x1b[1m{} fought against the file system and lost~\x1b[0m",
@@ -205,7 +221,17 @@ fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
         Ok(beg) => beg,
     };
 
-    let (response_kind, code) = if begging || maybe_beg.is_not_needed() {
+    let (response_kind, code) = if maybe_beg.is_needed() {
+        // uh oh, someone isn't begging like they need to~
+        match maybe_beg.needs {
+            NeedsBeg::Needed(BegKind::RequestFirstBeg) => (ResponseType::FirstBeg, 69),
+            NeedsBeg::Needed(BegKind::EnforceFirstBeg) => (ResponseType::DidNotBeg, 69),
+            NeedsBeg::Needed(BegKind::RequestBegMore) => (ResponseType::MustBegMore, 69),
+            NeedsBeg::NotNeeded => unreachable!(
+                "mommy cannot reach this case~ someone did something naughty and needs a spanking~"
+            ),
+        }
+    } else {
         // Can add handling for if they are begging at the first required beg.
         // Because that means they are begging more than they need to.
         //
@@ -228,24 +254,12 @@ fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
             return Ok(code);
         }
 
-        (
-            if status.success() {
-                ResponseType::Positive
-            } else {
-                ResponseType::Negative
-            },
-            code,
-        )
-    } else {
-        // uh oh, someone isn't begging like they need to~
-
-        match maybe_beg.needs {
-            NeedsBeg::Needed(BegKind::First) => (ResponseType::FirstBeg, 69),
-            NeedsBeg::Needed(BegKind::NotFirst) => (ResponseType::DidNotBeg, 69),
-            NeedsBeg::NotNeeded => unreachable!(
-                "mommy cannot reach this case~ someone did something naughty and needs a spanking~"
-            ),
-        }
+        let rt = if status.success() {
+            ResponseType::Positive
+        } else {
+            ResponseType::Negative
+        };
+        (rt, code)
     };
 
     // Time for mommy to tell you how you did~
@@ -281,8 +295,9 @@ fn is_quiet_mode_enabled(args: std::process::CommandArgs) -> bool {
 
 /// Mommy should be able to tell if this is her first time asking for a pet to beg~
 enum BegKind {
-    First,
-    NotFirst,
+    RequestFirstBeg,
+    EnforceFirstBeg,
+    RequestBegMore,
 }
 
 enum NeedsBeg {
@@ -301,8 +316,8 @@ struct BegCtx {
 
 impl BegCtx {
     #[must_use]
-    fn is_not_needed(&self) -> bool {
-        matches!(self.needs, NeedsBeg::NotNeeded)
+    fn is_needed(&self) -> bool {
+        !matches!(self.needs, NeedsBeg::NotNeeded)
     }
 
     /// Remove a lock file
@@ -315,8 +330,8 @@ impl BegCtx {
 }
 
 /// does mommy need a little extra~?
-fn check_need_beg(rng: &Rng, beg_chance: u8) -> Result<BegCtx, std::io::Error> {
-    // TODO(?): Make this configurable where it's placed
+fn check_need_beg(rng: &Rng, begging: bool, beg_half_life: u16, stubborn_chance: u8) -> anyhow::Result<BegCtx> {
+
     let lock_file_path = {
         let mut file = home::cargo_home()?;
         file.push(LOCK_FILE_NAME);
@@ -324,36 +339,88 @@ fn check_need_beg(rng: &Rng, beg_chance: u8) -> Result<BegCtx, std::io::Error> {
     };
 
     // Fast path if mommy's pet is always good~
-    if beg_chance == 0 {
+    if beg_half_life == 0 {
         return Ok(BegCtx {
             needs: NeedsBeg::NotNeeded,
             path: lock_file_path,
         });
     }
 
-    let beg_pick = rng.u8(..100);
+    // Check if they begged using a file
+    let beg_file_path = {
+        let mut file = home::cargo_home()?;
+        file.push(BEG_FILE_NAME);
+        file
+    };
+    let recent_beg = std::fs::OpenOptions::new()
+        .write(true)
+        .create(begging)
+        .open(&beg_file_path);
+    let elapsed = match recent_beg {
+        Ok(recent_beg) => {
+            if begging {
+                recent_beg.set_modified(SystemTime::now())?;
+                Duration::new(0, 0)
+            } else {
+                recent_beg.metadata()?.modified()?.elapsed()?
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            // Pet has never begged before, or the previous beg was revoked.
+            // Mommy will be generous and consider her pet's previous beg to be 1 year ago.
+            Duration::new(365*24*60*60, 0)
+        }
+        Err(err) => return Err(anyhow::Error::from(err))
+    };
 
-    // Unconditionally create lock file to try and mitigate mitigate funny toctou
+    // Was pet's previous begging recent enough?
+    let decay_rate = std::f64::consts::LN_2 / beg_half_life as f64;
+    let probability = f64::exp(-decay_rate * elapsed.as_secs_f64());
+    let beg_is_recent_enough = rng.f64() < probability;
+
+    // Unconditionally create lock file to try and mitigate funny toctou
     let maybe_lock = std::fs::OpenOptions::new()
         .create_new(true)
         .append(true)
         .open(&lock_file_path);
 
-    match maybe_lock {
-        Ok(_) => Ok(BegCtx {
-            needs: if beg_pick < beg_chance {
-                NeedsBeg::Needed(BegKind::First)
+    let needs = match (beg_is_recent_enough, maybe_lock) {
+
+        // previous beg is recent enough
+        // mommy did not request begging anyway
+        (true, Ok(_)) => NeedsBeg::NotNeeded,
+
+        // previous beg is not recent enough
+        // mommy will make her first request
+        (false, Ok(_)) => NeedsBeg::Needed(BegKind::RequestFirstBeg),
+
+        // previous beg is not recent enough
+        // even AFTER mommy specifically reminded her pet
+        (false, Err(err)) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Delete latest beg
+            let _ = std::fs::remove_file(&beg_file_path);
+            // Enforce first beg
+            NeedsBeg::Needed(BegKind::EnforceFirstBeg)
+        }
+
+        // previous beg is recent enough
+        // But because mommy had to remind her pet so much,
+        // maybe she's feeling stubborn and wants more...
+        (true, Err(err)) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            let stubborn_pick = rng.u8(..100);
+            if stubborn_pick < stubborn_chance {
+                // Delete latest beg
+                let _ = std::fs::remove_file(&beg_file_path);
+                // Require more begging
+                NeedsBeg::Needed(BegKind::RequestBegMore)
             } else {
+                // Okay, mommy is satisfied
                 NeedsBeg::NotNeeded
-            },
-            path: lock_file_path,
-        }),
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(BegCtx {
-            needs: NeedsBeg::Needed(BegKind::NotFirst),
-            path: lock_file_path,
-        }),
-        Err(err) => Err(err),
-    }
+            }
+        }
+        (_, Err(err)) => return Err(anyhow::Error::from(err))
+    };
+    return Ok(BegCtx { needs, path: lock_file_path });
 }
 
 fn select_response(
@@ -384,8 +451,8 @@ fn select_response(
         ResponseType::Negative => group.negative,
         ResponseType::Overflow => group.overflow,
         ResponseType::FirstBeg => group.beg_first,
-        // TODO: Implement this category
-        ResponseType::DidNotBeg => group.beg_first,
+        ResponseType::DidNotBeg => group.did_not_beg,
+        ResponseType::MustBegMore => group.must_beg_more,
     };
     let response = &responses[rng.usize(..responses.len())];
 
@@ -441,6 +508,8 @@ struct Mood<'a> {
     negative: &'a [&'a [Chunk<'a>]],
     overflow: &'a [&'a [Chunk<'a>]],
     beg_first: &'a [&'a [Chunk<'a>]],
+    did_not_beg: &'a [&'a [Chunk<'a>]],
+    must_beg_more: &'a [&'a [Chunk<'a>]],
 }
 
 enum Chunk<'a> {
