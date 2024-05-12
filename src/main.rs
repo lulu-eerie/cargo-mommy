@@ -1,10 +1,10 @@
 #![allow(clippy::let_and_return)]
 
+#[cfg(feature = "beg")]
+mod beg;
+
 use std::env;
 use std::io::IsTerminal;
-use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
-
 use fastrand::Rng;
 
 #[derive(Copy, Clone)]
@@ -12,8 +12,12 @@ enum ResponseType {
     Positive,
     Negative,
     Overflow,
+
+    #[cfg(feature = "beg")]
     FirstBeg,
+    #[cfg(feature = "beg")]
     DidNotBeg,
+    #[cfg(feature = "beg")]
     MustBegMore,
 }
 
@@ -24,12 +28,6 @@ const RECURSION_LIMIT: u8 = 100;
 /// This name is intentionally not user-configurable. Mommy can't let the little ones make *too*
 /// much of a mess~
 const RECURSION_LIMIT_VAR: &str = "CARGO_MOMMY_RECURSION_LIMIT";
-
-/// The lock file name
-const LOCK_FILE_NAME: &str = "MOMMY.lock";
-
-/// The beg file name
-const BEG_FILE_NAME: &str = "MOMMY-PLEASE.time";
 
 fn main() {
     // Ideally mommy would use ExitCode but that's pretty new and mommy wants
@@ -144,6 +142,7 @@ fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
     // mommy will attempt to parse your input as an integer~
     // but if you provide nonsense you'll get punished~
 
+    #[cfg(feature = "beg")]
     let beg_half_life: u16 = BEG_HALF_LIFE
         .load(&true_role, &rng)?
         .trim()
@@ -154,6 +153,7 @@ fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
             _ => 600,
         });
 
+    #[cfg(feature = "beg")]
     let beg_stubborn_chance: u8 = BEG_STUBBORN_CHANCE
         .load(&true_role, &rng)?
         .trim()
@@ -170,6 +170,7 @@ fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
     // Mommy also makes sure not to break anyone who wants to use a real tool called "cargo
     // please" if set to zero.
 
+    #[cfg(feature = "beg")]
     let begging = if beg_half_life == 0 {
         u8::MAX
     } else {
@@ -252,7 +253,8 @@ fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
     }
 
     // mommy probably shouldn't be too smart with file system errors
-    let mut maybe_beg = match check_need_beg(&rng, begging, beg_half_life, beg_stubborn_chance) {
+    #[cfg(feature = "beg")]
+    let mut maybe_beg = match beg::check_need_beg(&rng, begging, beg_half_life, beg_stubborn_chance) {
         Err(err) => {
             eprintln!(
                 "\x1b[1m{} fought against the file system and lost~\x1b[0m",
@@ -263,21 +265,35 @@ fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
         Ok(beg) => beg,
     };
 
-    let (response_kind, code) = if maybe_beg.is_needed() {
-        // uh oh, someone isn't begging like they need to~
-        match maybe_beg.needs {
-            NeedsBeg::Needed(BegKind::RequestFirstBeg) => (ResponseType::FirstBeg, 69),
-            NeedsBeg::Needed(BegKind::EnforceFirstBeg) => (ResponseType::DidNotBeg, 69),
-            NeedsBeg::Needed(BegKind::RequestBegMore) => (ResponseType::MustBegMore, 69),
-            NeedsBeg::NotNeeded => unreachable!(
-                "mommy cannot reach this case~ someone did something naughty and needs a spanking~"
-            ),
+    #[allow(unused_mut, unused_assignments)]
+    let mut beg_needed = false;
+    #[cfg(feature = "beg")]
+    {
+        beg_needed = maybe_beg.is_needed();
+    }
+
+    let (response_kind, code) = if beg_needed {
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "beg")] {
+                // uh oh, someone isn't begging like they need to~
+                match maybe_beg.needs {
+                    beg::NeedsBeg::Needed(beg::BegKind::RequestFirstBeg) => (ResponseType::FirstBeg, 69),
+                    beg::NeedsBeg::Needed(beg::BegKind::EnforceFirstBeg) => (ResponseType::DidNotBeg, 69),
+                    beg::NeedsBeg::Needed(beg::BegKind::RequestBegMore) => (ResponseType::MustBegMore, 69),
+                    beg::NeedsBeg::NotNeeded => unreachable!(
+                        "mommy cannot reach this case~ someone did something naughty and needs a spanking~"
+                    ),
+                }
+            } else {
+                unreachable!("mommy cannot reach this case~ begging is disabled")
+            }
         }
     } else {
         // Can add handling for if they are begging at the first required beg.
         // Because that means they are begging more than they need to.
         //
         // This could be good or bad. Depending on mommy's mood.
+        #[cfg(feature = "beg")]
         if let Err(err) = maybe_beg.remove_lock() {
             eprintln!(
                 "\x1b[1m{} fought against the file system and lost~\x1b[0m",
@@ -337,151 +353,6 @@ fn is_quiet_mode_enabled(args: std::process::CommandArgs) -> bool {
     false
 }
 
-/// Mommy should be able to tell if this is her first time asking for a pet to beg~
-enum BegKind {
-    RequestFirstBeg,
-    EnforceFirstBeg,
-    RequestBegMore,
-}
-
-enum NeedsBeg {
-    NotNeeded,
-    Needed(BegKind),
-}
-
-/// whether mommy needs her pet to beg, and how to create a lock if they do.
-struct BegCtx {
-    /// Whether or not mommy requires begging
-    needs: NeedsBeg,
-
-    /// Path to the lock file that may or may not exist
-    path: PathBuf,
-}
-
-impl BegCtx {
-    #[must_use]
-    fn is_needed(&self) -> bool {
-        !matches!(self.needs, NeedsBeg::NotNeeded)
-    }
-
-    /// Remove a lock file
-    fn remove_lock(&mut self) -> Result<(), std::io::Error> {
-        match std::fs::remove_file(&self.path) {
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            err => err,
-        }
-    }
-}
-
-/// does mommy need a little extra~?
-fn check_need_beg(rng: &Rng, mut begging: u8, beg_half_life: u16, stubborn_chance: u8) -> anyhow::Result<BegCtx> {
-
-    let lock_file_path = {
-        let mut file = home::cargo_home()?;
-        file.push(LOCK_FILE_NAME);
-        file
-    };
-
-    // Fast path if mommy's pet is always good~
-    if beg_half_life == 0 {
-        return Ok(BegCtx {
-            needs: NeedsBeg::NotNeeded,
-            path: lock_file_path,
-        });
-    }
-
-    // Check if they begged using a file
-    let beg_file_path = {
-        let mut file = home::cargo_home()?;
-        file.push(BEG_FILE_NAME);
-        file
-    };
-    let recent_beg = std::fs::OpenOptions::new()
-        .write(true)
-        .create(begging > 0)
-        .open(&beg_file_path);
-    let elapsed = match recent_beg {
-        Ok(recent_beg) => {
-            if begging > 0 {
-                recent_beg.set_modified(SystemTime::now())?;
-                Duration::new(0, 0)
-            } else {
-                recent_beg.metadata()?.modified()?.elapsed()?
-            }
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            // Pet has never begged before, or the previous beg was revoked.
-            // Mommy will be generous and consider her pet's previous beg to be 1 year ago.
-            Duration::new(365*24*60*60, 0)
-        }
-        Err(err) => return Err(anyhow::Error::from(err))
-    };
-
-    // Was pet's previous begging recent enough?
-    let decay_rate = std::f64::consts::LN_2 / beg_half_life as f64;
-    let probability = f64::exp(-decay_rate * elapsed.as_secs_f64());
-    let beg_is_recent_enough = rng.f64() < probability;
-
-    // called without begging, but begging file could be externally refreshed
-    if beg_is_recent_enough && begging == 0 {
-        begging += 1;
-    }
-
-    // Unconditionally create lock file to try and mitigate funny toctou
-    let maybe_lock = std::fs::OpenOptions::new()
-        .create_new(true)
-        .append(true)
-        .open(&lock_file_path);
-
-    let needs = match (beg_is_recent_enough, maybe_lock) {
-
-        // previous beg is recent enough
-        // mommy did not request begging anyway
-        (true, Ok(_)) => NeedsBeg::NotNeeded,
-
-        // previous beg is not recent enough
-        // mommy will make her first request
-        (false, Ok(_)) => {
-            // Delete latest beg
-            let _ = std::fs::remove_file(&beg_file_path);
-            // Request first beg
-            NeedsBeg::Needed(BegKind::RequestFirstBeg)
-        },
-
-        // previous beg is not recent enough
-        // even AFTER mommy specifically reminded her pet
-        (false, Err(err)) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-            // Delete latest beg
-            let _ = std::fs::remove_file(&beg_file_path);
-            // Enforce first beg
-            NeedsBeg::Needed(BegKind::EnforceFirstBeg)
-        }
-
-        // previous beg is recent enough
-        // But because mommy had to remind her pet so much,
-        // maybe she's feeling stubborn and wants more...
-        (true, Err(err)) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-            let mut beg_more = true;
-            while begging > 0 && beg_more {
-                let stubborn_pick = rng.u8(..100);
-                beg_more = stubborn_pick < stubborn_chance;
-                begging -= 1;
-            }
-            if beg_more {
-                // Delete latest beg
-                let _ = std::fs::remove_file(&beg_file_path);
-                // Require more begging
-                NeedsBeg::Needed(BegKind::RequestBegMore)
-            } else {
-                // Okay, mommy is satisfied
-                NeedsBeg::NotNeeded
-            }
-        }
-        (_, Err(err)) => return Err(anyhow::Error::from(err))
-    };
-    return Ok(BegCtx { needs, path: lock_file_path });
-}
-
 fn select_response(
     true_role: &str,
     rng: &Rng,
@@ -509,8 +380,12 @@ fn select_response(
         ResponseType::Positive => group.positive,
         ResponseType::Negative => group.negative,
         ResponseType::Overflow => group.overflow,
+
+        #[cfg(feature = "beg")]
         ResponseType::FirstBeg => group.beg_first,
+        #[cfg(feature = "beg")]
         ResponseType::DidNotBeg => group.did_not_beg,
+        #[cfg(feature = "beg")]
         ResponseType::MustBegMore => group.must_beg_more,
     };
     let response = &responses[rng.usize(..responses.len())];
@@ -566,8 +441,11 @@ struct Mood<'a> {
     positive: &'a [&'a [Chunk<'a>]],
     negative: &'a [&'a [Chunk<'a>]],
     overflow: &'a [&'a [Chunk<'a>]],
+    #[cfg(feature = "beg")]
     beg_first: &'a [&'a [Chunk<'a>]],
+    #[cfg(feature = "beg")]
     did_not_beg: &'a [&'a [Chunk<'a>]],
+    #[cfg(feature = "beg")]
     must_beg_more: &'a [&'a [Chunk<'a>]],
 }
 

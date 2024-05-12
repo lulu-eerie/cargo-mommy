@@ -22,6 +22,7 @@ name = "cargo-mommy"
 version = "0.3.1"
 dependencies = [
  "anyhow",
+ "cfg-if",
  "fastrand",
  "home",
  "regex",
