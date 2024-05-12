@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime};
 
 use fastrand::Rng;
 
+#[derive(Copy, Clone)]
 enum ResponseType {
     Positive,
     Negative,
@@ -100,16 +101,45 @@ fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
     // *INHALES DESPERATELY*
     //
     // cargo subcommands when run as "cargo blah" get the "blah" argument passed to themselves
-    // as the *second* argument. However if we are invoked directly as "cargo-blah" we won't
+    // as the *second* argument. However, if we are invoked directly as "cargo-blah" we won't
     // have that extra argument! So if there's a second argument that is "mommy" (or whatever)
     // we pop off that redundant copy before forwarding the rest of the args back to "cargo ...".
     // if we don't do this, we'll infinitely recurse into ourselves by re-calling "cargo mommy"!
     // (note that it *is* supported to do `cargo mommy mommy` and get two messages, although I
     // believe we do this, `cargo-mommy mommy` will still only get you one message).
+    //
+    // Contiguous mommies are consolidated in-place (as follows), but interspersed mommies can
+    // still be handled recursively (as above). For example, "cargo mommy vibe mommy mommy"
+    // will consolidate 1+1 contiguously and 1+2 recursively.
+    //
+    // Invoking "MOMMY" in all caps counts as two normal invocations of lowercase "mommy".
+    //
+    // Begging can be a little finicky. Without consolidation, "cargo mommy mommy please"
+    // would provide begging to the inner mommy, but might be rejected for a lack of begging
+    // by the outer mommy (before the inner mommy can even run). With consolidation, this is not an
+    // issue. However, this problem can still be triggered by evading consolidation and using
+    // recursion instead. For example, "cargo mommy vibe mommy please" will have an outer mommy
+    // that cannot see the begging for inner mommy. In any case, these should work with no
+    // begging confusion, whether by consolidation or ordered begging in recursion:
+    // - "cargo mommy please vibe mommy"
+    // - "cargo mommy please mommy vibe"
+    // - "cargo mommy mommy please vibe"
 
-    if arg_iter.peek().map_or(false, |arg| arg == &true_role) {
+    let mut mommy_count = 0usize;
+    let mut peek = arg_iter.peek();
+    while let Some(arg) = peek {
+        if arg.to_lowercase() == true_role {
+            mommy_count += 1;
+            if arg == &true_role.to_uppercase() {
+                mommy_count += 1;
+            }
+        } else {
+            break;
+        }
         let _ = arg_iter.next();
+        peek = arg_iter.peek();
     }
+    let mommy_count = mommy_count.max(1usize).min(RECURSION_LIMIT as usize) as u8;
 
     // mommy will attempt to parse your input as an integer~
     // but if you provide nonsense you'll get punished~
@@ -121,7 +151,7 @@ fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
         .unwrap_or_else(|err: std::num::ParseIntError| match err.kind() {
             std::num::IntErrorKind::PosOverflow => u16::MAX,
             std::num::IntErrorKind::NegOverflow => 0,
-            _ => 120,
+            _ => 600,
         });
 
     let beg_stubborn_chance: u8 = BEG_STUBBORN_CHANCE
@@ -131,7 +161,7 @@ fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
         .unwrap_or_else(|err: std::num::ParseIntError| match err.kind() {
             std::num::IntErrorKind::PosOverflow => 100,
             std::num::IntErrorKind::NegOverflow => 0,
-            _ => 33,
+            _ => 20,
         });
 
     // Sometimes mommy will decide to make you beg. So we have to check to make sure that if we
@@ -141,14 +171,26 @@ fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
     // please" if set to zero.
 
     let begging = if beg_half_life == 0 {
-        true
+        u8::MAX
     } else {
-        arg_iter
-            .peek()
-            .map_or(false, |arg| arg == "please")
-            .then(|| arg_iter.next())
-            .flatten()
-            .is_some()
+        let normal_please = "please".to_string();
+        let desperate_please = normal_please.to_uppercase();
+
+        let mut begging_count = 0usize;
+        let mut peek = arg_iter.peek();
+        while let Some(arg) = peek {
+            if arg.to_lowercase() == normal_please {
+                begging_count += 1;
+                if arg.to_string() == desperate_please {
+                    begging_count += 1;
+                }
+            } else {
+                break
+            }
+            let _ = arg_iter.next();
+            peek = arg_iter.peek();
+        }
+        begging_count.min(u8::MAX as usize) as u8
     };
 
     // *WHEEZES*
@@ -247,7 +289,7 @@ fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
         // Time for mommy to call cargo~
         let mut cmd = std::process::Command::new(cargo);
         cmd.args(args)
-            .env(RECURSION_LIMIT_VAR, new_limit.to_string());
+            .env(RECURSION_LIMIT_VAR, (new_limit + mommy_count).to_string());
         let status = cmd.status()?;
         let code = status.code().unwrap_or(1);
         if is_quiet_mode_enabled(cmd.get_args()) {
@@ -263,9 +305,11 @@ fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
     };
 
     // Time for mommy to tell you how you did~
-    let response = select_response(&true_role, &rng, response_kind);
-
-    pretty_print(response);
+    let mut mommy_count = mommy_count;
+    while mommy_count > 0 {
+        pretty_print(select_response(&true_role, &rng, response_kind));
+        mommy_count -= 1;
+    }
 
     Ok(code)
 }
@@ -330,7 +374,7 @@ impl BegCtx {
 }
 
 /// does mommy need a little extra~?
-fn check_need_beg(rng: &Rng, begging: bool, beg_half_life: u16, stubborn_chance: u8) -> anyhow::Result<BegCtx> {
+fn check_need_beg(rng: &Rng, mut begging: u8, beg_half_life: u16, stubborn_chance: u8) -> anyhow::Result<BegCtx> {
 
     let lock_file_path = {
         let mut file = home::cargo_home()?;
@@ -354,11 +398,11 @@ fn check_need_beg(rng: &Rng, begging: bool, beg_half_life: u16, stubborn_chance:
     };
     let recent_beg = std::fs::OpenOptions::new()
         .write(true)
-        .create(begging)
+        .create(begging > 0)
         .open(&beg_file_path);
     let elapsed = match recent_beg {
         Ok(recent_beg) => {
-            if begging {
+            if begging > 0 {
                 recent_beg.set_modified(SystemTime::now())?;
                 Duration::new(0, 0)
             } else {
@@ -378,6 +422,11 @@ fn check_need_beg(rng: &Rng, begging: bool, beg_half_life: u16, stubborn_chance:
     let probability = f64::exp(-decay_rate * elapsed.as_secs_f64());
     let beg_is_recent_enough = rng.f64() < probability;
 
+    // called without begging, but begging file could be externally refreshed
+    if beg_is_recent_enough && begging == 0 {
+        begging += 1;
+    }
+
     // Unconditionally create lock file to try and mitigate funny toctou
     let maybe_lock = std::fs::OpenOptions::new()
         .create_new(true)
@@ -392,7 +441,12 @@ fn check_need_beg(rng: &Rng, begging: bool, beg_half_life: u16, stubborn_chance:
 
         // previous beg is not recent enough
         // mommy will make her first request
-        (false, Ok(_)) => NeedsBeg::Needed(BegKind::RequestFirstBeg),
+        (false, Ok(_)) => {
+            // Delete latest beg
+            let _ = std::fs::remove_file(&beg_file_path);
+            // Request first beg
+            NeedsBeg::Needed(BegKind::RequestFirstBeg)
+        },
 
         // previous beg is not recent enough
         // even AFTER mommy specifically reminded her pet
@@ -407,8 +461,13 @@ fn check_need_beg(rng: &Rng, begging: bool, beg_half_life: u16, stubborn_chance:
         // But because mommy had to remind her pet so much,
         // maybe she's feeling stubborn and wants more...
         (true, Err(err)) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-            let stubborn_pick = rng.u8(..100);
-            if stubborn_pick < stubborn_chance {
+            let mut beg_more = true;
+            while begging > 0 && beg_more {
+                let stubborn_pick = rng.u8(..100);
+                beg_more = stubborn_pick < stubborn_chance;
+                begging -= 1;
+            }
+            if beg_more {
                 // Delete latest beg
                 let _ = std::fs::remove_file(&beg_file_path);
                 // Require more begging
