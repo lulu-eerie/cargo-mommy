@@ -46,7 +46,6 @@ Mommy will read the following environment variables to make her messages better 
 * `CARGO_MOMMYS_ROLES` - what role mommy will have~ (default "mommy")
 * `CARGO_MOMMYS_EMOTES` - what emotes mommy will have~ (default "❤️/💖/💗/💓/💞")
 * `CARGO_MOMMYS_MOODS` - picks the set of possible responses~ (default: "chill", possible values "chill", "ominous")
-* `CARGO_MOMMYS_BEG_CHANCES` - Percentage chance that mommy will make you beg for it~ (meaing add "please" after "mommy", default: 0)
 
 All of these options can take a `/` separated list. Mommy will randomly select one of them whenever she talks to you~
 
@@ -60,7 +59,15 @@ So if you set `CARGO_MOMMYS_ROLES="daddy"`, `CARGO_MOMMYS_PRONOUNS="his/their"`,
 
 And so on~ 💓
 
+## Begging 
 
+The `beg` feature (disabled by default) will allow Mommy to decline your request if you are not polite enough~  💗
+
+In order to beg for Mommy, invoke `cargo mommy please x` instead of `cargo mommy x`.
+
+Begging is an independent feature that respects every mood, spicy or not 🥰
+
+[Learn more about how to beg for Mommy](https://faultlore.com/cargo-mommy/book/customize/begging.html)
 
 
 
